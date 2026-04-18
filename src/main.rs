@@ -1,62 +1,81 @@
 use std::fs::read_to_string;
+use std::iter::Peekable;
 
 #[derive(Debug)]
 enum Token {
     Num(i32),
     AddOp,
     SubOp,
-    Add(Box<Token>, Box<Token>),
-    Sub(Box<Token>, Box<Token>),
+    MulOp,
     Identifier(String),
 }
 
-impl Token {
-    fn deref(self) -> i32 {
-        match self {
-            Token::Num(n) => n,
-            Token::Add(n1, n2) => n1.deref() + n2.deref(),
-            Token::Sub(n1, n2) => n1.deref() - n2.deref(),
-            _ => unimplemented!(),
-        }
+#[derive(Debug)]
+enum Expr {
+    Num(i32),
+    Add(Box<Expr>, Box<Expr>),
+    Sub(Box<Expr>, Box<Expr>),
+    Mul(Box<Expr>, Box<Expr>),
+    Identifier(String),
+}
+
+fn get_bp(token: &Token) -> u8 {
+    match token {
+        Token::AddOp | Token::SubOp => 10,
+        Token::MulOp => 20,
+        _ => 0,
     }
 }
 
-fn lex(code: &str) -> Vec<Token> {
-    code.split_whitespace()
+fn lex(input: &str) -> Vec<Token> {
+    input
+        .split_whitespace()
         .filter_map(|word| match word {
             "+" => Some(Token::AddOp),
             "-" => Some(Token::SubOp),
+            "*" => Some(Token::MulOp),
             n => n.parse::<i32>().ok().map(Token::Num),
         })
         .collect()
 }
 
-fn parse(lexed: Vec<Token>) -> Vec<Token> {
-    let mut iter = lexed.into_iter().peekable();
-    let mut tokens = Vec::new();
+fn parse_expr(iter: &mut Peekable<impl Iterator<Item = Token>>, bp_start: u8) -> Expr {
+    let first_token = iter.next().expect("Error!!!!!!");
+    let mut left = match first_token {
+        Token::Num(n) => Expr::Num(n),
+        Token::Identifier(s) => Expr::Identifier(s),
+        _ => unimplemented!(),
+    };
 
-    while let Some(token) = iter.next() {
-        match token {
-            Token::Num(n) => tokens.push(Token::Num(n)),
-            Token::AddOp => {
-                let left = tokens.pop().expect("Error!!!!!!");
-                let right = iter.next().expect("Error!!!!!!");
-                tokens.push(Token::Add(Box::new(left), Box::new(right)));
-            }
-            Token::SubOp => {
-                let left = tokens.pop().expect("Error!!!!!!");
-                let right = iter.next().expect("Error!!!!!!");
-                tokens.push(Token::Sub(Box::new(left), Box::new(right)));
-            }
+    while let Some(next_token) = iter.peek() {
+        let bp = get_bp(&next_token);
+        if bp <= bp_start {
+            break;
+        }
+        let op = iter.next().unwrap();
+        let right = parse_expr(iter, bp);
+        left = match op {
+            Token::AddOp => Expr::Add(Box::new(left), Box::new(right)),
+            Token::SubOp => Expr::Sub(Box::new(left), Box::new(right)),
+            Token::MulOp => Expr::Mul(Box::new(left), Box::new(right)),
             _ => unimplemented!(),
         }
     }
-    tokens
+    left
 }
 
-fn run(parsed: Vec<Token>) {
-    for token in parsed {
-        println!("{:?}", token.deref());
+fn parse(lexed: Vec<Token>) -> Expr {
+    let mut iter = lexed.into_iter().peekable();
+    parse_expr(&mut iter, 0)
+}
+
+fn eval(parsed: &Expr) -> i32 {
+    match parsed {
+        Expr::Num(n) => *n,
+        Expr::Add(left, right) => eval(left) + eval(right),
+        Expr::Sub(left, right) => eval(left) - eval(right),
+        Expr::Mul(left, right) => eval(left) * eval(right),
+        _ => unimplemented!(),
     }
 }
 
@@ -65,5 +84,5 @@ fn main() {
     println!("Lexed: {:?}", tokens);
     let tokens = parse(tokens);
     println!("Parsed: {:?}", tokens);
-    run(tokens);
+    println!("Result: {:?}", eval(&tokens));
 }
