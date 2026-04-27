@@ -16,15 +16,27 @@ enum Token<'a> {
 }
 
 #[derive(Debug)]
+enum UnaryOp {
+    Positive,
+    Negative,
+    Increment,
+    Decrement,
+}
+
+#[derive(Debug)]
+enum BinaryOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Pow,
+}
+
+#[derive(Debug)]
 enum Expr<'a> {
     Num(i32),
-    Negate(Box<Expr<'a>>),
-    Add(Box<Expr<'a>>, Box<Expr<'a>>),
-    Sub(Box<Expr<'a>>, Box<Expr<'a>>),
-    Mul(Box<Expr<'a>>, Box<Expr<'a>>),
-    Div(Box<Expr<'a>>, Box<Expr<'a>>),
-    Pow(Box<Expr<'a>>, Box<Expr<'a>>),
-    Parentheses(Box<Expr<'a>>),
+    Unary(UnaryOp, Box<Expr<'a>>),
+    Binary(BinaryOp, Box<Expr<'a>>, Box<Expr<'a>>),
     Identifier(&'a str),
 }
 
@@ -105,7 +117,7 @@ fn parse_expr<'a>(iter: &mut Peekable<impl Iterator<Item = Token<'a>>>, bp_start
         }
         Token::SubOp => {
             let inner = parse_expr(iter, 25);
-            Expr::Negate(Box::new(inner))
+            Expr::Unary(UnaryOp::Negative, Box::new(inner))
         }
         _ => unimplemented!(),
     };
@@ -116,15 +128,19 @@ fn parse_expr<'a>(iter: &mut Peekable<impl Iterator<Item = Token<'a>>>, bp_start
             break;
         }
         let op = iter.next().unwrap();
-        let right = parse_expr(iter, bp);
-        left = match op {
-            Token::AddOp => Expr::Add(Box::new(left), Box::new(right)),
-            Token::SubOp => Expr::Sub(Box::new(left), Box::new(right)),
-            Token::MulOp => Expr::Mul(Box::new(left), Box::new(right)),
-            Token::DivOp => Expr::Div(Box::new(left), Box::new(right)),
-            Token::PowOp => Expr::Pow(Box::new(left), Box::new(right)),
+        let right = match op {
+            Token::PowOp => parse_expr(iter, bp - 1),
+            _ => parse_expr(iter, bp),
+        };
+        let opkind = match op {
+            Token::AddOp => BinaryOp::Add,
+            Token::SubOp => BinaryOp::Sub,
+            Token::MulOp => BinaryOp::Mul,
+            Token::DivOp => BinaryOp::Div,
+            Token::PowOp => BinaryOp::Pow,
             _ => unimplemented!(),
-        }
+        };
+        left = Expr::Binary(opkind, Box::new(left), Box::new(right));
     }
     left
 }
@@ -137,12 +153,19 @@ fn parse(lexed: Vec<Token>) -> Expr {
 fn eval(parsed: &Expr) -> i32 {
     match parsed {
         Expr::Num(n) => *n,
-        Expr::Negate(inner) => -eval(inner),
-        Expr::Add(left, right) => eval(left) + eval(right),
-        Expr::Sub(left, right) => eval(left) - eval(right),
-        Expr::Mul(left, right) => eval(left) * eval(right),
-        Expr::Div(left, right) => eval(left) / eval(right),
-        Expr::Pow(left, right) => eval(left).pow(eval(right).try_into().expect("Error!!!!!!")),
+        Expr::Unary(kind, inner) => match kind {
+            UnaryOp::Positive => eval(inner),
+            UnaryOp::Negative => -eval(inner),
+            _ => unimplemented!(),
+        },
+        Expr::Binary(kind, left, right) => match kind {
+            BinaryOp::Add => eval(left) + eval(right),
+            BinaryOp::Sub => eval(left) - eval(right),
+            BinaryOp::Mul => eval(left) * eval(right),
+            BinaryOp::Div => eval(left) / eval(right),
+            BinaryOp::Pow => eval(left).pow(eval(right).try_into().expect("Error!!!!!!")),
+            _ => unimplemented!(),
+        },
         _ => unimplemented!(),
     }
 }
