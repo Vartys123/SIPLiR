@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fs::read_to_string;
 use std::iter::Peekable;
 
@@ -26,12 +27,13 @@ enum Token<'a> {
     LParen,
     RParen,
     Identifier(&'a str),
+    Let,
+    Equal,
     EOF,
 }
 
 #[derive(Debug)]
 enum UnaryOp {
-    Positive,
     Negative,
     Increment,
     Decrement,
@@ -54,6 +56,25 @@ enum Expr<'a> {
     Identifier(&'a str),
 }
 
+#[derive(Debug)]
+struct Scope<'a> {
+    variables: HashMap<&'a str, i32>,
+}
+
+impl<'a> Scope<'a> {
+    fn new() -> Self {
+        Self {
+            variables: HashMap::new(),
+        }
+    }
+}
+
+#[derive(Debug)]
+enum Stmt<'a> {
+    Let(&'a str, Expr<'a>),
+    Expr(Expr<'a>),
+}
+
 fn get_bp(token: &Token) -> u8 {
     match token {
         Token::AddOp | Token::SubOp => 10,
@@ -63,7 +84,7 @@ fn get_bp(token: &Token) -> u8 {
     }
 }
 
-fn lex(input: &str) -> (Vec<Token>, Vec<ErrorKind>) {
+fn lex(input: &str) -> (Vec<Token<'_>>, Vec<ErrorKind>) {
     let bytes = input.as_bytes();
     let mut tokens = Vec::new();
     let mut errors = Vec::new();
@@ -99,6 +120,10 @@ fn lex(input: &str) -> (Vec<Token>, Vec<ErrorKind>) {
                 tokens.push(Token::RParen);
                 i += 1
             }
+            b'=' => {
+                tokens.push(Token::Equal);
+                i += 1
+            }
             b'0'..=b'9' => {
                 let start = i;
                 while i < bytes.len() && bytes[i].is_ascii_digit() {
@@ -114,7 +139,12 @@ fn lex(input: &str) -> (Vec<Token>, Vec<ErrorKind>) {
                 while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
                     i += 1
                 }
-                tokens.push(Token::Identifier(&input[start..i]));
+                let word = &input[start..i];
+                let token = match word {
+                    "let" => Token::Let,
+                    _ => Token::Identifier(word),
+                };
+                tokens.push(token);
             }
             _ => {
                 errors.push(ErrorKind::LexerError("Unrecognized character!"));
@@ -173,26 +203,54 @@ fn parse_expr<'a>(
     Ok(left)
 }
 
-fn parse(lexed: Vec<Token>) -> Result<Expr, ErrorKind> {
-    let mut iter = lexed.into_iter().peekable();
-    let expr = parse_expr(&mut iter, 0)?;
-    match iter.next() {
-        Some(Token::EOF) => Ok(expr),
-        _ => Err(ErrorKind::ParserError("Unexpected trailing characters!")),
+fn parse_stmt<'a>(
+    iter: &mut Peekable<impl Iterator<Item = Token<'a>>>,
+) -> Result<Stmt<'a>, ErrorKind> {
+    match iter.peek() {
+        Some(Token::Let) => {
+            iter.next();
+            let name = match iter.next() {
+                Some(Token::Identifier(n)) => n,
+                _ => {
+                    return Err(ErrorKind::ParserError(
+                        "Expected variable name after 'let'!",
+                    ))
+                }
+            };
+            match iter.next() {
+                Some(Token::Equal) => {}
+                _ => return Err(ErrorKind::ParserError("Expected '=' after variable name!")),
+            }
+            let expr = parse_expr(iter, 0)?;
+            Ok(Stmt::Let(name, expr))
+        }
+        _ => Ok(Stmt::Expr(parse_expr(iter, 0)?)),
     }
 }
 
-fn eval(parsed: &Expr) -> Result<i32, ErrorKind> {
-    Ok(match parsed {
+fn parse(lexed: Vec<Token>) -> Result<Vec<Stmt>, ErrorKind> {
+    let mut iter = lexed.into_iter().peekable();
+    let mut stmts = Vec::new();
+
+    while let Some(token) = iter.peek() {
+        if let Token::EOF = token {
+            break;
+        };
+        stmts.push(parse_stmt(&mut iter)?);
+    }
+    Ok(stmts)
+}
+
+fn eval_expr(expr: &Expr, scope: &Scope) -> Result<i32, ErrorKind> {
+    Ok(match expr {
         Expr::Num(n) => *n,
         Expr::Unary(kind, inner) => match kind {
-            UnaryOp::Positive => eval(inner)?,
-            UnaryOp::Negative => -eval(inner)?,
+            UnaryOp::Negative => -eval_expr(inner, scope)?,
             _ => return Err(ErrorKind::EvalError("Unexpected unary operation!")),
         },
         Expr::Binary(kind, left, right) => {
-            let l = eval(left)?;
-            let r = eval(right)?;
+            let l = eval_expr(left, scope)?;
+            let r = eval_expr(right, scope)?;
             match kind {
                 BinaryOp::Add => l + r,
                 BinaryOp::Sub => l - r,
@@ -207,11 +265,28 @@ fn eval(parsed: &Expr) -> Result<i32, ErrorKind> {
                     r.try_into()
                         .map_err(|_| ErrorKind::EvalError("Failed to convert the type!"))?,
                 ),
-                _ => return Err(ErrorKind::EvalError("Unexpected binary operation!")),
             }
         }
-        _ => return Err(ErrorKind::EvalError("Not implemented!")),
+        Expr::Identifier(name) => scope
+            .variables
+            .get(name)
+            .copied()
+            .ok_or(ErrorKind::EvalError("Unidentified variable!"))?,
     })
+}
+
+fn eval_stmt<'a>(stmt: &Stmt<'a>, scope: &mut Scope<'a>) -> Result<(), ErrorKind> {
+    match stmt {
+        Stmt::Let(name, expr) => {
+            let expr = eval_expr(&expr, &scope)?;
+            scope.variables.insert(name, expr);
+            Ok(())
+        }
+        Stmt::Expr(expr) => {
+            eval_expr(&expr, &scope)?;
+            Ok(())
+        }
+    }
 }
 
 fn main() -> Result<(), ErrorKind> {
@@ -225,9 +300,15 @@ fn main() -> Result<(), ErrorKind> {
         return Ok(());
     }
     println!("Lexed: {:?}", tokens);
-    let tokens = parse(tokens)?;
-    println!("Parsed: {:?}", tokens);
-    println!("Result: {:?}", eval(&tokens)?);
 
+    let stmts = parse(tokens)?;
+    println!("Parsed: {:?}", stmts);
+
+    let mut scope = Scope::new();
+    for stmt in stmts {
+        eval_stmt(&stmt, &mut scope)?;
+    }
+
+    println!("Result: {:?}", scope);
     Ok(())
 }
